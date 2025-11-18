@@ -1,1 +1,1 @@
-Scripts to set up commonly used services (e.g. SSH server, Tor, etc).
+Scripts to set up commonly used software (e.g. SSH server, Tor, etc).
