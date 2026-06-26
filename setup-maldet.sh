@@ -91,15 +91,14 @@ echo "maldet is configured to run daily via cron. Scanning path: ${SCAN_PATH}"
 
 echo "--- 4. Initial Test Scan ---"
 echo "Running an initial full scan on the configured path: ${SCAN_PATH}"
-# Run an initial scan in the background
-sudo maldet --scan-all ${SCAN_PATH} &
-MALDET_PID=$!
-echo "maldet initial scan started in the background (PID: $MALDET_PID). This may take some time."
-echo "You can check the progress with: ps -p $MALDET_PID"
-echo "Scan results will be logged in: ${LMD_INSTALL_DIR}/event_log"
+echo "This may take some time..."
+# Run an initial scan and wait for completion
+sudo maldet --scan-all ${SCAN_PATH}
+check_exit "maldet initial scan"
+
+echo "Scan results are logged in: ${LMD_INSTALL_DIR}/event_log"
 
 echo "--- 5. Installation Complete! ---"
 echo "To view the configuration file, run: sudo nano ${LMD_CONFIG_FILE}"
 echo "To run a manual scan on a directory: sudo maldet -a /path/to/scan"
 echo "To view last scan reports: sudo maldet --report list"
-
