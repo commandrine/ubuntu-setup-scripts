@@ -296,29 +296,34 @@ process_maldet_results() {
         return
     fi
     
-    # Extract summary information from Maldet output
-    local scan_summary=$(grep -E "files scanned|scan report|detection count" "$maldet_log" | tail -5)
+    # Extract the scan completion line which contains the hit count
+    # Format: "maldet(PID): {scan} scan completed on /path: files X, malware hits Y, cleaned hits Z, time Ts"
+    local scan_completion=$(grep "{scan} scan completed" "$maldet_log" | tail -1)
+    local scan_report=$(grep "{scan} scan report saved" "$maldet_log" | tail -1)
     
-    if [[ -n "$scan_summary" ]]; then
-        echo "$scan_summary" | while read -r line; do
-            log_info "$line"
-        done
+    if [[ -n "$scan_report" ]]; then
+        log_info "$scan_report"
     fi
     
-    # Check for detections
-    if grep -qiE "malware|detected|threat" "$maldet_log"; then
+    # Extract malware hits count from completion line
+    local malware_hits=0
+    if [[ -n "$scan_completion" ]]; then
+        log_info "$scan_completion"
+        # Extract the malware hits number
+        malware_hits=$(echo "$scan_completion" | grep -oP 'malware hits \K[0-9]+' | head -1)
+    fi
+    
+    # Color code based on malware hits
+    if [[ "$malware_hits" -eq 0 ]]; then
+        result_ok "No malware detected - Clean scan"
+    else
+        result_alert "Malware detected: $malware_hits hit(s) found - REQUIRES REVIEW"
         log_info ""
-        log_info "Threats detected (requires review):"
-        grep -iE "malware|detected|threat" "$maldet_log" | head -20 | while read -r line; do
+        log_info "Detected threats (requires review):"
+        # Extract threat details from the log
+        grep -E "(SUSPECT|DETECTION)" "$maldet_log" | while read -r line; do
             result_alert "$line"
         done
-        result_alert "Additional detections logged - See $maldet_log for full details"
-    else
-        if grep -q "0.*detect" "$maldet_log" || grep -q "no malware" "$maldet_log"; then
-            result_ok "No malware detected - Clean scan"
-        else
-            result_ok "Scan completed - Check logs for detailed results"
-        fi
     fi
     
     log_info ""
