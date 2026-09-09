@@ -26,6 +26,7 @@ NC='\033[0m'  # No Color
 SCAN_DIRECTORY="${1:-/home}"
 LOG_DIR="/var/log/malscan"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+WGET_TIMEOUT=30
 
 ################################################################################
 # Helper Functions
@@ -126,7 +127,9 @@ install_maldet() {
     
     # Download latest maldet
     cd /tmp || exit 1
-    MALDET_VERSION=$(curl -s https://www.rfxn.com/maldet/ | grep -oP 'maldet-\d+\.\d+\.\d+' | head -1 || echo "maldet-1.6.4")
+    
+    # Try to get the latest version from multiple sources
+    MALDET_VERSION=$(curl -s --connect-timeout 5 --max-time 10 https://www.rfxn.com/maldet/ 2>/dev/null | grep -oP 'maldet-\d+\.\d+\.\d+' | head -1 || echo "maldet-1.6.4")
     
     if [[ -z "$MALDET_VERSION" ]]; then
         log_warning "Could not determine latest maldet version, using v1.6.4"
@@ -134,7 +137,22 @@ install_maldet() {
     fi
     
     log_info "Downloading ${MALDET_VERSION}..."
-    wget -q "https://www.rfxn.com/downloads/${MALDET_VERSION}.tar.gz" -O "${MALDET_VERSION}.tar.gz"
+    
+    # Try alternative download URLs with timeout
+    if ! wget --connect-timeout=$WGET_TIMEOUT --read-timeout=$WGET_TIMEOUT -q "https://www.rfxn.com/downloads/${MALDET_VERSION}.tar.gz" -O "${MALDET_VERSION}.tar.gz" 2>/dev/null; then
+        log_warning "Primary download source failed, trying alternative URL..."
+        if ! wget --connect-timeout=$WGET_TIMEOUT --read-timeout=$WGET_TIMEOUT -q "http://www.rfxn.com/downloads/${MALDET_VERSION}.tar.gz" -O "${MALDET_VERSION}.tar.gz" 2>/dev/null; then
+            log_error "Failed to download Maldet from all sources"
+            log_warning "Skipping Maldet installation - proceeding with ClamAV scan only"
+            return 1
+        fi
+    fi
+    
+    # Verify download
+    if [[ ! -f "${MALDET_VERSION}.tar.gz" ]] || [[ ! -s "${MALDET_VERSION}.tar.gz" ]]; then
+        log_error "Downloaded file is invalid or empty"
+        return 1
+    fi
     
     # Extract and install
     tar xzf "${MALDET_VERSION}.tar.gz"
@@ -149,6 +167,11 @@ install_maldet() {
 }
 
 update_maldet() {
+    if ! command_exists maldet; then
+        log_warning "Maldet is not installed, skipping update"
+        return 0
+    fi
+    
     log_info "Updating Maldet version and signatures..."
     
     # Update maldet version
@@ -177,6 +200,33 @@ setup_logging() {
 # Malware Scanning
 ################################################################################
 
+perform_clamav_scan() {
+    log_info "Starting ClamAV scan..."
+    local clamav_log="${LOG_DIR}/clamav_scan_${TIMESTAMP}.log"
+    
+    if ! clamscan -r "$SCAN_DIRECTORY" 2>&1 | tee -a "$clamav_log"; then
+        log_warning "ClamAV scan completed with warnings or detections"
+    fi
+    
+    log_success "ClamAV scan completed. Logs saved to: $clamav_log"
+}
+
+perform_maldet_scan() {
+    if ! command_exists maldet; then
+        log_warning "Maldet is not available, skipping Maldet scan"
+        return 0
+    fi
+    
+    log_info "Starting Maldet scan..."
+    local maldet_log="${LOG_DIR}/maldet_scan_${TIMESTAMP}.log"
+    
+    if ! maldet --scan-all "$SCAN_DIRECTORY" 2>&1 | tee -a "$maldet_log"; then
+        log_warning "Maldet scan completed with warnings or malware detections"
+    fi
+    
+    log_success "Maldet scan completed. Logs saved to: $maldet_log"
+}
+
 perform_scan() {
     local scan_dir="$1"
     
@@ -188,26 +238,27 @@ perform_scan() {
     log_info "Scanning directory: $scan_dir"
     log_info "This may take a while depending on the directory size..."
     
-    # Create scan log file
-    local scan_log="${LOG_DIR}/maldet_scan_${TIMESTAMP}.log"
+    # Perform ClamAV scan
+    perform_clamav_scan
     
-    # Perform maldet scan - ensure it completes even if malware is found
-    log_info "Starting Maldet scan..."
-    if ! maldet --scan-all "$scan_dir" 2>&1 | tee -a "$scan_log"; then
-        log_warning "Maldet scan completed with warnings or malware detections"
-    fi
+    # Perform Maldet scan if available
+    perform_maldet_scan
     
-    log_success "Scan completed. Logs saved to: $scan_log"
+    log_success "All scans completed"
 }
 
 review_findings() {
     log_info "Reviewing scan findings..."
     
-    # List all recent scan reports
-    maldet --report list || log_warning "Could not retrieve scan reports"
+    if command_exists maldet; then
+        # List all recent scan reports
+        maldet --report list || log_warning "Could not retrieve Maldet scan reports"
+        
+        log_info "To view a specific report, use: maldet --report <report-id>"
+        log_info "To quarantine detected files, use: maldet --quarantine <report-id>"
+    fi
     
-    log_info "To view a specific report, use: maldet --report <report-id>"
-    log_info "To quarantine detected files, use: maldet --quarantine <report-id>"
+    log_info "ClamAV logs are available in: $LOG_DIR"
 }
 
 ################################################################################
@@ -234,7 +285,7 @@ main() {
     
     # Install and configure Maldet
     log_info "Processing Maldet..."
-    install_maldet
+    install_maldet || log_warning "Maldet installation failed, will use ClamAV only"
     update_maldet
     
     # Perform scan
@@ -246,7 +297,9 @@ main() {
     log_success "=== Malware Scan Complete ==="
     log_info "Scan logs are available in: $LOG_DIR"
     log_info "ClamAV quarantine location: /var/lib/clamav/"
-    log_info "Maldet quarantine location: /var/lib/maldet/quarantine/"
+    if command_exists maldet; then
+        log_info "Maldet quarantine location: /var/lib/maldet/quarantine/"
+    fi
     
     return 0
 }
