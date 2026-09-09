@@ -5,10 +5,12 @@
 # 
 # This script installs and configures malware scanning tools on Ubuntu:
 # - ClamAV (antivirus engine) - installed via apt
-# - Maldet (Linux malware detector) - installed from official R-fx downloads
+# - Maldet (Linux malware detector) - installed from official GitHub rfxn/linux-malware-detect
 #
 # Both tools update signatures before every scan to ensure latest definitions.
 # This follows the recommended approach used by Ubuntu administrators.
+#
+# Official Maldet Repository: https://github.com/rfxn/linux-malware-detect
 #
 # Usage: sudo bash malscan.sh [scan_directory]
 # Example: sudo bash malscan.sh /home
@@ -27,7 +29,8 @@ NC='\033[0m'  # No Color
 SCAN_DIRECTORY="${1:-/home}"
 LOG_DIR="/var/log/malscan"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-WGET_TIMEOUT=30
+MALDET_REPO="https://github.com/rfxn/linux-malware-detect.git"
+MALDET_INSTALL_DIR="/usr/local/maldetect"
 
 ################################################################################
 # Helper Functions
@@ -114,78 +117,100 @@ update_clamav_signatures() {
 ################################################################################
 # Maldet (Linux Malware Detector) Installation and Configuration
 # 
-# Maldet is installed from official R-fx downloads (not available in apt)
-# See: https://www.rfxn.com/projects/linux-malware-detect/
+# Maldet is installed from the official GitHub repository (rfxn/linux-malware-detect)
+# See: https://github.com/rfxn/linux-malware-detect
 ################################################################################
 
 install_maldet() {
     if command_exists maldet; then
-        log_info "Maldet is already installed"
+        log_info "Maldet is already installed at $(command -v maldet)"
         return 0
     fi
     
-    log_info "Installing Linux Malware Detector (Maldet) from official R-fx downloads..."
+    log_info "Installing Linux Malware Detector (Maldet) from official GitHub repository..."
+    log_info "Repository: $MALDET_REPO"
     
     # Install dependencies
-    apt-get install -y -qq wget tar gzip curl
+    log_info "Installing Maldet dependencies (git, perl)..."
+    apt-get install -y -qq git perl
     
-    # Download latest maldet from R-fx
+    # Clone the official Maldet repository
+    log_info "Cloning official Maldet repository..."
     cd /tmp || exit 1
     
-    # Query R-fx website to determine latest version
-    log_info "Determining latest Maldet version from R-fx..."
-    MALDET_VERSION=$(curl -s --connect-timeout 5 --max-time 10 https://www.rfxn.com/maldet/ 2>/dev/null | grep -oP 'maldet-\d+\.\d+\.\d+' | head -1 || echo "maldet-1.6.4")
-    
-    if [[ -z "$MALDET_VERSION" ]]; then
-        log_warning "Could not determine latest maldet version, using v1.6.4 fallback"
-        MALDET_VERSION="maldet-1.6.4"
+    # Remove any existing clone
+    if [[ -d "linux-malware-detect" ]]; then
+        log_info "Removing existing linux-malware-detect directory..."
+        rm -rf linux-malware-detect
     fi
     
-    log_info "Downloading ${MALDET_VERSION} from official R-fx repository..."
-    
-    # Try download with timeout and fallback
-    if ! wget --connect-timeout=$WGET_TIMEOUT --read-timeout=$WGET_TIMEOUT -q "https://www.rfxn.com/downloads/${MALDET_VERSION}.tar.gz" -O "${MALDET_VERSION}.tar.gz" 2>/dev/null; then
-        log_warning "HTTPS download failed, trying HTTP fallback..."
-        if ! wget --connect-timeout=$WGET_TIMEOUT --read-timeout=$WGET_TIMEOUT -q "http://www.rfxn.com/downloads/${MALDET_VERSION}.tar.gz" -O "${MALDET_VERSION}.tar.gz" 2>/dev/null; then
-            log_error "Failed to download Maldet from R-fx"
-            log_warning "Skipping Maldet installation - proceeding with ClamAV scan only"
-            return 1
-        fi
-    fi
-    
-    # Verify download
-    if [[ ! -f "${MALDET_VERSION}.tar.gz" ]] || [[ ! -s "${MALDET_VERSION}.tar.gz" ]]; then
-        log_error "Downloaded file is invalid or empty"
+    # Clone repository with depth for faster cloning
+    if ! git clone --depth 1 "$MALDET_REPO" 2>&1 | tee -a "${LOG_DIR}/maldet_clone.log"; then
+        log_error "Failed to clone Maldet repository from GitHub"
+        log_error "Repository: $MALDET_REPO"
+        log_error "Clone log saved to: ${LOG_DIR}/maldet_clone.log"
         return 1
     fi
     
-    # Extract and install using R-fx installer
-    tar xzf "${MALDET_VERSION}.tar.gz"
-    cd "${MALDET_VERSION}" || exit 1
-    ./install.sh
+    log_success "Repository cloned successfully"
+    
+    # Enter the cloned directory and run installer
+    cd linux-malware-detect || exit 1
+    
+    log_info "Running Maldet installer..."
+    if ! ./install.sh 2>&1 | tee -a "${LOG_DIR}/maldet_install.log"; then
+        local install_exit_code=$?
+        log_error "Maldet installer failed with exit code: $install_exit_code"
+        log_error "Installation log saved to: ${LOG_DIR}/maldet_install.log"
+        cd /tmp || exit 1
+        rm -rf linux-malware-detect
+        return 1
+    fi
+    
+    log_success "Maldet installer completed successfully"
+    log_info "Maldet installed to: $MALDET_INSTALL_DIR"
+    
+    # Verify installation
+    if [[ -f "${MALDET_INSTALL_DIR}/maldet" ]]; then
+        log_success "Maldet binary verified at: ${MALDET_INSTALL_DIR}/maldet"
+    fi
+    
+    if command_exists maldet; then
+        log_success "Maldet command is available in PATH"
+    fi
     
     # Cleanup
     cd /tmp || exit 1
-    rm -rf "${MALDET_VERSION}" "${MALDET_VERSION}.tar.gz"
+    rm -rf linux-malware-detect
     
-    log_success "Maldet installed successfully from R-fx"
+    log_success "Maldet installed successfully from GitHub"
 }
 
-update_maldet_signatures() {
+update_maldet() {
     if ! command_exists maldet; then
-        log_warning "Maldet is not installed, skipping signature update"
+        log_warning "Maldet is not installed, skipping update"
         return 0
     fi
     
-    log_info "Updating Maldet signatures and definitions..."
+    log_info "Updating Maldet engine and signatures..."
     
     # Update maldet engine version
-    maldet --update-ver || log_warning "Maldet version update encountered an issue"
+    log_info "Updating Maldet engine version..."
+    if ! maldet --update-ver 2>&1 | tee -a "${LOG_DIR}/maldet_update_ver_${TIMESTAMP}.log"; then
+        log_warning "Maldet version update encountered an issue"
+        log_warning "Check log: ${LOG_DIR}/maldet_update_ver_${TIMESTAMP}.log"
+    else
+        log_success "Maldet engine version updated"
+    fi
     
     # Update maldet signature database
-    maldet --update-sigs || log_warning "Maldet signature update encountered an issue"
-    
-    log_success "Maldet signatures updated"
+    log_info "Updating Maldet signature database..."
+    if ! maldet --update-sigs 2>&1 | tee -a "${LOG_DIR}/maldet_update_sigs_${TIMESTAMP}.log"; then
+        log_warning "Maldet signature update encountered an issue"
+        log_warning "Check log: ${LOG_DIR}/maldet_update_sigs_${TIMESTAMP}.log"
+    else
+        log_success "Maldet signatures updated"
+    fi
 }
 
 ################################################################################
@@ -216,6 +241,7 @@ perform_clamav_scan() {
     update_clamav_signatures
     
     # Run ClamAV scan
+    log_info "Scanning with ClamAV (recursive mode)..."
     if ! clamscan -r "$SCAN_DIRECTORY" 2>&1 | tee -a "$clamav_log"; then
         log_warning "ClamAV scan completed with warnings or detections"
     fi
@@ -236,9 +262,10 @@ perform_maldet_scan() {
     local maldet_log="${LOG_DIR}/maldet_scan_${TIMESTAMP}.log"
     
     # Update signatures immediately before scan
-    update_maldet_signatures
+    update_maldet
     
     # Run Maldet scan
+    log_info "Scanning with Maldet (all files mode)..."
     if ! maldet --scan-all "$SCAN_DIRECTORY" 2>&1 | tee -a "$maldet_log"; then
         log_warning "Maldet scan completed with warnings or malware detections"
     fi
@@ -257,9 +284,12 @@ perform_scan() {
     log_info "Starting malware scans..."
     log_info "Scan directory: $scan_dir"
     log_info "This may take a while depending on the directory size..."
+    log_info ""
     
     # Perform ClamAV scan with signature update
     perform_clamav_scan
+    
+    log_info ""
     
     # Perform Maldet scan with signature update (if available)
     perform_maldet_scan
@@ -269,22 +299,31 @@ perform_scan() {
 
 review_findings() {
     log_info "=========================================="
-    log_info "Scan Summary"
+    log_info "Scan Summary and Next Steps"
     log_info "=========================================="
+    log_info ""
     
     if command_exists maldet; then
         # List all recent scan reports
         log_info "Recent Maldet reports:"
-        maldet --report list || log_warning "Could not retrieve Maldet scan reports"
-        
-        log_info ""
-        log_info "To view a specific Maldet report, use:"
-        log_info "  maldet --report <report-id>"
-        log_info ""
-        log_info "To quarantine detected files, use:"
-        log_info "  maldet --quarantine <report-id>"
+        if maldet --report list 2>&1 | tee -a "${LOG_DIR}/maldet_reports_${TIMESTAMP}.log"; then
+            log_info ""
+            log_info "To view a specific Maldet report, use:"
+            log_info "  sudo maldet --report <report-id>"
+            log_info ""
+            log_info "To quarantine detected files, use:"
+            log_info "  sudo maldet --quarantine <report-id>"
+            log_info ""
+            log_info "To view scan details:"
+            log_info "  cat /usr/local/maldetect/sess/*"
+        else
+            log_warning "Could not retrieve Maldet scan reports"
+        fi
     fi
     
+    log_info ""
+    log_info "ClamAV scan logs:"
+    log_info "  $(ls -1 ${LOG_DIR}/clamav_scan*.log 2>/dev/null | tail -1)"
     log_info ""
     log_info "All scan logs are available in: $LOG_DIR"
 }
@@ -298,6 +337,7 @@ main() {
     log_info "Malware Scanner Setup and Execution"
     log_info "=========================================="
     log_info "Scan directory: $SCAN_DIRECTORY"
+    log_info "Log directory: $LOG_DIR"
     log_info ""
     
     # Verify root access
@@ -310,15 +350,32 @@ main() {
     prepare_system
     
     # Install and configure ClamAV (via apt)
-    log_info "Processing ClamAV installation..."
+    log_info "=========================================="
+    log_info "Phase 1: ClamAV Installation"
+    log_info "=========================================="
     install_clamav
+    log_info ""
     
-    # Install Maldet (from R-fx downloads)
-    log_info "Processing Maldet installation..."
-    install_maldet || log_warning "Maldet installation failed, will use ClamAV only"
+    # Install Maldet (from GitHub)
+    log_info "=========================================="
+    log_info "Phase 2: Maldet Installation"
+    log_info "=========================================="
+    if ! install_maldet; then
+        local maldet_exit_code=$?
+        log_error "Maldet installation failed with exit code: $maldet_exit_code"
+        log_error "Installation log: ${LOG_DIR}/maldet_install.log"
+        log_error "Clone log: ${LOG_DIR}/maldet_clone.log"
+        log_warning "Continuing with ClamAV-only scanning"
+    fi
+    log_info ""
     
     # Perform scans with signature updates before each scan
+    log_info "=========================================="
+    log_info "Phase 3: Malware Scanning"
+    log_info "=========================================="
     perform_scan "$SCAN_DIRECTORY"
+    
+    log_info ""
     
     # Review findings
     review_findings
@@ -327,11 +384,14 @@ main() {
     log_success "Malware Scan Complete"
     log_success "=========================================="
     log_info ""
-    log_info "Scan results:"
+    log_info "Scan Results Summary:"
     log_info "  ClamAV quarantine: /var/lib/clamav/"
     if command_exists maldet; then
-        log_info "  Maldet quarantine: /var/lib/maldet/quarantine/"
+        log_info "  Maldet quarantine: /usr/local/maldetect/quarantine/"
+        log_info "  Maldet installation: $MALDET_INSTALL_DIR"
     fi
+    log_info ""
+    log_info "All logs saved to: $LOG_DIR"
     log_info ""
     
     return 0
