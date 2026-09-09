@@ -193,7 +193,7 @@ perform_scan() {
     
     # Perform maldet scan
     log_info "Starting Maldet scan..."
-    maldet --scan-all "$scan_dir" | tee -a "$scan_log"
+    maldet --scan-all "$scan_dir" | tee -a "$scan_log" || true
     
     log_success "Scan completed. Logs saved to: $scan_log"
 }
