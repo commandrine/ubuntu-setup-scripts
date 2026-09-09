@@ -6,11 +6,15 @@ if ! command -v freshclam &> /dev/null; then
     echo "Installing ClamAV..."
     sudo apt update
     sudo apt install -y clamav clamav-daemon
+    # Ensure the binary is available after installation
+    export PATH="/usr/bin:$PATH"
 fi
 
 if ! command -v maldet &> /dev/null; then
     echo "Installing Maldet..."
     sudo apt install -y maldet
+    # Ensure the binary is available after installation
+    export PATH="/usr/bin:$PATH"
 fi
 
 # Stop ClamAV daemon to avoid lock conflicts during update
