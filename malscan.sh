@@ -52,6 +52,16 @@ log_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
+# Color code for scan results - Green for OK
+result_ok() {
+    echo -e "${GREEN}✓ $1${NC}"
+}
+
+# Color code for scan results - Red for requires review
+result_alert() {
+    echo -e "${RED}⚠ $1${NC}"
+}
+
 check_root() {
     if [[ $EUID -ne 0 ]]; then
         log_error "This script must be run as root (use sudo)"
@@ -227,6 +237,94 @@ setup_logging() {
 }
 
 ################################################################################
+# Scan Result Processing and Color Coding
+################################################################################
+
+process_clamav_results() {
+    local clamav_log="$1"
+    
+    log_info ""
+    log_info "=========================================="
+    log_info "ClamAV Scan Results - Color Coded"
+    log_info "=========================================="
+    
+    if [[ ! -f "$clamav_log" ]]; then
+        log_warning "ClamAV log file not found: $clamav_log"
+        return
+    fi
+    
+    # Extract summary line from ClamAV output
+    local known_viruses=$(grep "Known viruses" "$clamav_log" | tail -1)
+    local engine_version=$(grep "Engine version" "$clamav_log" | tail -1)
+    local scanned_files=$(grep "Scanned files" "$clamav_log" | tail -1)
+    local infected_files=$(grep "Infected files" "$clamav_log" | tail -1)
+    local data_scanned=$(grep "Data scanned" "$clamav_log" | tail -1)
+    
+    [[ -n "$known_viruses" ]] && log_info "$known_viruses"
+    [[ -n "$engine_version" ]] && log_info "$engine_version"
+    [[ -n "$scanned_files" ]] && log_info "$scanned_files"
+    [[ -n "$data_scanned" ]] && log_info "$data_scanned"
+    
+    # Check for infected files
+    if grep -q "Infected files: 0" "$clamav_log"; then
+        result_ok "No malware detected - Clean scan"
+    else
+        if [[ -n "$infected_files" ]]; then
+            result_alert "$infected_files - REQUIRES REVIEW"
+        fi
+        
+        # Extract and color code each detected threat
+        log_info ""
+        log_info "Detected threats (requires review):"
+        grep ": " "$clamav_log" | grep -E "(FOUND|Detected)" | while read -r line; do
+            result_alert "$line"
+        done
+    fi
+    
+    log_info ""
+}
+
+process_maldet_results() {
+    local maldet_log="$1"
+    
+    log_info "=========================================="
+    log_info "Maldet Scan Results - Color Coded"
+    log_info "=========================================="
+    
+    if [[ ! -f "$maldet_log" ]]; then
+        log_warning "Maldet log file not found: $maldet_log"
+        return
+    fi
+    
+    # Extract summary information from Maldet output
+    local scan_summary=$(grep -E "files scanned|scan report|detection count" "$maldet_log" | tail -5)
+    
+    if [[ -n "$scan_summary" ]]; then
+        echo "$scan_summary" | while read -r line; do
+            log_info "$line"
+        done
+    fi
+    
+    # Check for detections
+    if grep -qiE "malware|detected|threat" "$maldet_log"; then
+        log_info ""
+        log_info "Threats detected (requires review):"
+        grep -iE "malware|detected|threat" "$maldet_log" | head -20 | while read -r line; do
+            result_alert "$line"
+        done
+        result_alert "Additional detections logged - See $maldet_log for full details"
+    else
+        if grep -q "0.*detect" "$maldet_log" || grep -q "no malware" "$maldet_log"; then
+            result_ok "No malware detected - Clean scan"
+        else
+            result_ok "Scan completed - Check logs for detailed results"
+        fi
+    fi
+    
+    log_info ""
+}
+
+################################################################################
 # Malware Scanning
 ################################################################################
 
@@ -247,6 +345,9 @@ perform_clamav_scan() {
     fi
     
     log_success "ClamAV scan completed. Logs saved to: $clamav_log"
+    
+    # Process and display color-coded results
+    process_clamav_results "$clamav_log"
 }
 
 perform_maldet_scan() {
@@ -271,6 +372,9 @@ perform_maldet_scan() {
     fi
     
     log_success "Maldet scan completed. Logs saved to: $maldet_log"
+    
+    # Process and display color-coded results
+    process_maldet_results "$maldet_log"
 }
 
 perform_scan() {
@@ -392,6 +496,10 @@ main() {
     fi
     log_info ""
     log_info "All logs saved to: $LOG_DIR"
+    log_info ""
+    log_info "Legend:"
+    result_ok "Result requires no action"
+    result_alert "Result requires human review"
     log_info ""
     
     return 0
