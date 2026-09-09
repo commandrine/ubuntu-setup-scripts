@@ -12,8 +12,19 @@
 #
 # Official Maldet Repository: https://github.com/rfxn/linux-malware-detect
 #
-# Usage: sudo bash malscan.sh [scan_directory]
-# Example: sudo bash malscan.sh /home
+# Usage: sudo bash malscan.sh [OPTIONS] [scan_directory]
+# 
+# Options:
+#   -c, --clamav       Run ClamAV scan only
+#   -m, --maldet       Run Maldet scan only
+#   -a, --all          Run both ClamAV and Maldet scans (default)
+#   -h, --help         Display this help message
+#
+# Examples:
+#   sudo bash malscan.sh /home                    # Scan /home with all engines
+#   sudo bash malscan.sh -c /home                 # Scan /home with ClamAV only
+#   sudo bash malscan.sh -m /var/www              # Scan /var/www with Maldet only
+#   sudo bash malscan.sh --clamav /home           # Long form: ClamAV only
 ################################################################################
 
 set -e  # Exit on error
@@ -26,11 +37,15 @@ BLUE='\033[0;34m'
 NC='\033[0m'  # No Color
 
 # Configuration
-SCAN_DIRECTORY="${1:-/home}"
+SCAN_DIRECTORY="/home"
 LOG_DIR="/var/log/malscan"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 MALDET_REPO="https://github.com/rfxn/linux-malware-detect.git"
 MALDET_INSTALL_DIR="/usr/local/maldetect"
+
+# Scan engine flags
+SCAN_CLAMAV=false
+SCAN_MALDET=false
 
 ################################################################################
 # Helper Functions
@@ -71,6 +86,84 @@ check_root() {
 
 command_exists() {
     command -v "$1" >/dev/null 2>&1
+}
+
+show_help() {
+    cat << EOF
+Malware Scanner Setup and Execution Script
+
+Usage: sudo bash malscan.sh [OPTIONS] [scan_directory]
+
+Options:
+  -c, --clamav       Run ClamAV scan only
+  -m, --maldet       Run Maldet scan only
+  -a, --all          Run both ClamAV and Maldet scans (default)
+  -h, --help         Display this help message
+
+Arguments:
+  scan_directory     Directory to scan (default: /home)
+
+Examples:
+  sudo bash malscan.sh /home                    # Scan /home with all engines
+  sudo bash malscan.sh -c /home                 # Scan /home with ClamAV only
+  sudo bash malscan.sh -m /var/www              # Scan /var/www with Maldet only
+  sudo bash malscan.sh --clamav /home           # Long form: ClamAV only
+  sudo bash malscan.sh -a /                     # Scan entire filesystem with all engines
+
+Note: This script must be run with sudo/root privileges.
+EOF
+}
+
+parse_arguments() {
+    # Default to all scans
+    local scan_mode="all"
+    
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -c|--clamav)
+                scan_mode="clamav"
+                shift
+                ;;
+            -m|--maldet)
+                scan_mode="maldet"
+                shift
+                ;;
+            -a|--all)
+                scan_mode="all"
+                shift
+                ;;
+            -h|--help)
+                show_help
+                exit 0
+                ;;
+            -*)
+                log_error "Unknown option: $1"
+                echo ""
+                show_help
+                exit 1
+                ;;
+            *)
+                SCAN_DIRECTORY="$1"
+                shift
+                ;;
+        esac
+    done
+    
+    # Set scan engine flags based on mode
+    case "$scan_mode" in
+        clamav)
+            SCAN_CLAMAV=true
+            SCAN_MALDET=false
+            ;;
+        maldet)
+            SCAN_CLAMAV=false
+            SCAN_MALDET=true
+            ;;
+        all)
+            SCAN_CLAMAV=true
+            SCAN_MALDET=true
+            ;;
+    esac
 }
 
 ################################################################################
@@ -395,15 +488,19 @@ perform_scan() {
     log_info "This may take a while depending on the directory size..."
     log_info ""
     
-    # Perform ClamAV scan with signature update
-    perform_clamav_scan
+    # Perform ClamAV scan if enabled
+    if [[ "$SCAN_CLAMAV" == true ]]; then
+        perform_clamav_scan
+        log_info ""
+    fi
     
-    log_info ""
+    # Perform Maldet scan if enabled
+    if [[ "$SCAN_MALDET" == true ]]; then
+        perform_maldet_scan
+        log_info ""
+    fi
     
-    # Perform Maldet scan with signature update (if available)
-    perform_maldet_scan
-    
-    log_success "All scans completed"
+    log_success "All requested scans completed"
 }
 
 review_findings() {
@@ -412,7 +509,7 @@ review_findings() {
     log_info "=========================================="
     log_info ""
     
-    if command_exists maldet; then
+    if [[ "$SCAN_MALDET" == true ]] && command_exists maldet; then
         # List all recent scan reports
         log_info "Recent Maldet reports:"
         if maldet --report list 2>&1 | tee -a "${LOG_DIR}/maldet_reports_${TIMESTAMP}.log"; then
@@ -431,9 +528,12 @@ review_findings() {
     fi
     
     log_info ""
-    log_info "ClamAV scan logs:"
-    log_info "  $(ls -1 ${LOG_DIR}/clamav_scan*.log 2>/dev/null | tail -1)"
-    log_info ""
+    if [[ "$SCAN_CLAMAV" == true ]]; then
+        log_info "ClamAV scan logs:"
+        log_info "  $(ls -1 ${LOG_DIR}/clamav_scan*.log 2>/dev/null | tail -1)"
+        log_info ""
+    fi
+    
     log_info "All scan logs are available in: $LOG_DIR"
 }
 
@@ -442,11 +542,28 @@ review_findings() {
 ################################################################################
 
 main() {
+    # Parse command-line arguments first
+    parse_arguments "$@"
+    
     log_info "=========================================="
     log_info "Malware Scanner Setup and Execution"
     log_info "=========================================="
     log_info "Scan directory: $SCAN_DIRECTORY"
     log_info "Log directory: $LOG_DIR"
+    
+    # Display which engines will be used
+    local engines_str=""
+    if [[ "$SCAN_CLAMAV" == true ]]; then
+        engines_str="ClamAV"
+    fi
+    if [[ "$SCAN_MALDET" == true ]]; then
+        if [[ -n "$engines_str" ]]; then
+            engines_str="$engines_str + Maldet"
+        else
+            engines_str="Maldet"
+        fi
+    fi
+    log_info "Scan engines: $engines_str"
     log_info ""
     
     # Verify root access
@@ -455,28 +572,41 @@ main() {
     # Setup logging
     setup_logging
     
-    # System preparation
-    prepare_system
-    
-    # Install and configure ClamAV (via apt)
-    log_info "=========================================="
-    log_info "Phase 1: ClamAV Installation"
-    log_info "=========================================="
-    install_clamav
-    log_info ""
-    
-    # Install Maldet (from GitHub)
-    log_info "=========================================="
-    log_info "Phase 2: Maldet Installation"
-    log_info "=========================================="
-    if ! install_maldet; then
-        local maldet_exit_code=$?
-        log_error "Maldet installation failed with exit code: $maldet_exit_code"
-        log_error "Installation log: ${LOG_DIR}/maldet_install.log"
-        log_error "Clone log: ${LOG_DIR}/maldet_clone.log"
-        log_warning "Continuing with ClamAV-only scanning"
+    # System preparation (only if installing)
+    if ! command_exists clamscan || ! command_exists maldet; then
+        prepare_system
     fi
-    log_info ""
+    
+    # Install and configure ClamAV if needed
+    if [[ "$SCAN_CLAMAV" == true ]]; then
+        log_info "=========================================="
+        log_info "Phase 1: ClamAV Installation"
+        log_info "=========================================="
+        install_clamav
+        log_info ""
+    fi
+    
+    # Install Maldet if needed
+    if [[ "$SCAN_MALDET" == true ]]; then
+        log_info "=========================================="
+        log_info "Phase 2: Maldet Installation"
+        log_info "=========================================="
+        if ! install_maldet; then
+            local maldet_exit_code=$?
+            log_error "Maldet installation failed with exit code: $maldet_exit_code"
+            log_error "Installation log: ${LOG_DIR}/maldet_install.log"
+            log_error "Clone log: ${LOG_DIR}/maldet_clone.log"
+            
+            # If Maldet was the only requested engine, exit
+            if [[ "$SCAN_CLAMAV" == false ]]; then
+                log_error "Cannot continue without Maldet when it's the only requested scanner"
+                exit 1
+            fi
+            log_warning "Continuing with ClamAV-only scanning"
+            SCAN_MALDET=false
+        fi
+        log_info ""
+    fi
     
     # Perform scans with signature updates before each scan
     log_info "=========================================="
@@ -494,8 +624,10 @@ main() {
     log_success "=========================================="
     log_info ""
     log_info "Scan Results Summary:"
-    log_info "  ClamAV quarantine: /var/lib/clamav/"
-    if command_exists maldet; then
+    if [[ "$SCAN_CLAMAV" == true ]]; then
+        log_info "  ClamAV quarantine: /var/lib/clamav/"
+    fi
+    if [[ "$SCAN_MALDET" == true ]]; then
         log_info "  Maldet quarantine: /usr/local/maldetect/quarantine/"
         log_info "  Maldet installation: $MALDET_INSTALL_DIR"
     fi
@@ -510,5 +642,5 @@ main() {
     return 0
 }
 
-# Run main function
-main
+# Run main function with all arguments
+main "$@"
