@@ -101,7 +101,7 @@ update_clamav_signatures() {
     fi
     
     # Update ClamAV signatures
-    freshclam --verbose
+    freshclam --verbose || log_warning "ClamAV signature update encountered an issue"
     
     # Restart freshclam service
     systemctl start clamav-freshclam || true
@@ -152,10 +152,10 @@ update_maldet() {
     log_info "Updating Maldet version and signatures..."
     
     # Update maldet version
-    maldet --update-ver
+    maldet --update-ver || log_warning "Maldet version update encountered an issue"
     
     # Update maldet signatures
-    maldet --update-sigs
+    maldet --update-sigs || log_warning "Maldet signature update encountered an issue"
     
     log_success "Maldet updated successfully"
 }
@@ -191,9 +191,11 @@ perform_scan() {
     # Create scan log file
     local scan_log="${LOG_DIR}/maldet_scan_${TIMESTAMP}.log"
     
-    # Perform maldet scan
+    # Perform maldet scan - ensure it completes even if malware is found
     log_info "Starting Maldet scan..."
-    maldet --scan-all "$scan_dir" | tee -a "$scan_log" || true
+    if ! maldet --scan-all "$scan_dir" 2>&1 | tee -a "$scan_log"; then
+        log_warning "Maldet scan completed with warnings or malware detections"
+    fi
     
     log_success "Scan completed. Logs saved to: $scan_log"
 }
@@ -202,7 +204,7 @@ review_findings() {
     log_info "Reviewing scan findings..."
     
     # List all recent scan reports
-    maldet --report list
+    maldet --report list || log_warning "Could not retrieve scan reports"
     
     log_info "To view a specific report, use: maldet --report <report-id>"
     log_info "To quarantine detected files, use: maldet --quarantine <report-id>"
