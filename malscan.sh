@@ -13,8 +13,14 @@ if ! command -v maldet &> /dev/null; then
     sudo apt install -y maldet
 fi
 
+# Stop ClamAV daemon to avoid lock conflicts during update
+sudo systemctl stop clamav-daemon || true
+
 # Update ClamAV signatures
 sudo freshclam
+
+# Restart ClamAV daemon
+sudo systemctl start clamav-daemon || true
 
 # Update Maldet
 sudo maldet --update-ver
